@@ -1,0 +1,85 @@
+# ============================================================
+# GH-200 Study — Composite Action: Setup and Test
+# ============================================================
+# A composite action bundles multiple steps into a single
+# reusable unit that can be called with `uses:` at the step level.
+#
+# Usage in a workflow step:
+#
+#   - name: Setup and run tests
+#     uses: ./.github/actions/setup-and-test
+#     with:
+#       node-version: '22'
+#
+# Concepts demonstrated:
+#   - action.yml metadata file structure
+#   - inputs with description, required, default
+#   - outputs with value expression
+#   - runs: using: composite
+#   - Each step must specify shell: bash (or another shell)
+#   - Calling other actions from within a composite action
+# ============================================================
+
+name: "Setup and Test"
+description: "Install Node.js, install dependencies, and run tests"
+author: "GH-200 Study Project"
+
+# ── Inputs ──────────────────────────────────────────────────
+inputs:
+  node-version:
+    description: "Node.js version to set up"
+    required: false
+    default: "22"
+  working-directory:
+    description: "Directory that contains package.json"
+    required: false
+    default: "."
+
+# ── Outputs ─────────────────────────────────────────────────
+outputs:
+  test-result:
+    description: "Result of the test run: 'passed' or 'failed'"
+    value: ${{ steps.run-tests.outputs.test-result }}
+
+# ── Composite runtime ────────────────────────────────────────
+runs:
+  using: composite
+  steps:
+    # Step 1: Set up Node.js (calls another action from within composite)
+    - name: Set up Node.js ${{ inputs.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+
+    # Step 2: Install dependencies
+    # NOTE: composite action steps MUST declare shell:
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: npm ci
+
+    # Step 3: Run tests and capture result
+    - name: Run tests
+      id: run-tests
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        if npm test; then
+          echo "test-result=passed" >> $GITHUB_OUTPUT
+        else
+          echo "test-result=failed" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
+    # Step 4: Write a summary (demonstrates $GITHUB_STEP_SUMMARY in composite)
+    - name: Write summary
+      if: always()
+      shell: bash
+      run: |
+        echo "## Composite Action: Setup and Test" >> $GITHUB_STEP_SUMMARY
+        echo "| Input | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| node-version | ${{ inputs.node-version }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| working-directory | ${{ inputs.working-directory }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| test-result | ${{ steps.run-tests.outputs.test-result }} |" >> $GITHUB_STEP_SUMMARY

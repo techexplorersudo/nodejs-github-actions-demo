@@ -1,0 +1,89 @@
+# ============================================================
+# GH-200 Study — Project 3: Reusable Workflows & Custom Actions
+# ============================================================
+# Concepts demonstrated (Day 5):
+#   - Calling a reusable workflow (workflow_call)
+#   - Passing inputs & secrets to reusable workflow
+#   - Consuming outputs from a reusable workflow
+#   - Calling a local composite action (.github/actions/)
+#   - Composite action inputs & outputs
+#   - secrets: inherit shorthand
+# ============================================================
+
+name: "Project 3 – Reusable Workflows & Custom Actions"
+
+# ── Triggers ────────────────────────────────────────────────
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/project3-reusable-workflows.yml"
+      - ".github/workflows/reusable-run-tests.yml"
+      - ".github/actions/**"
+  workflow_dispatch:
+    inputs:
+      node-version:
+        description: "Node.js version to test with"
+        required: false
+        default: "22"
+        type: string
+
+# ── Default permissions ──────────────────────────────────────
+permissions:
+  contents: read
+
+# ============================================================
+# JOB 1: Use a LOCAL composite action
+# ============================================================
+jobs:
+  use-composite-action:
+    name: "Use Composite Action"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── Call our local composite action ───────────────────
+      # Defined in .github/actions/setup-and-test/action.yml
+      - name: Setup and run tests
+        id: composite
+        uses: ./.github/actions/setup-and-test
+        with:
+          node-version: ${{ github.event.inputs.node-version || '22' }}
+
+      # ── Consume composite action output ───────────────────
+      - name: Report composite action result
+        run: |
+          echo "Composite action result: ${{ steps.composite.outputs.test-result }}"
+          echo "## Composite Action Result" >> $GITHUB_STEP_SUMMARY
+          echo "- **Test result:** ${{ steps.composite.outputs.test-result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Node version:** ${{ github.event.inputs.node-version || '22' }}" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # JOB 2: Call a reusable workflow
+  # ============================================================
+  call-reusable-workflow:
+    name: "Call Reusable Workflow"
+    # Uses the reusable workflow defined in the same repo
+    uses: ./.github/workflows/reusable-run-tests.yml
+    with:
+      node-version: ${{ github.event.inputs.node-version || '22' }}
+      upload-results: true
+    # Pass secrets — use 'secrets: inherit' to forward ALL calling secrets
+    secrets: inherit
+
+  # ============================================================
+  # JOB 3: Consume reusable workflow outputs
+  # ============================================================
+  consume-outputs:
+    name: "Consume Reusable Workflow Outputs"
+    runs-on: ubuntu-latest
+    needs: call-reusable-workflow
+
+    steps:
+      - name: Print reusable workflow outputs
+        run: |
+          echo "Reusable workflow test result: ${{ needs.call-reusable-workflow.outputs.test-result }}"
+          echo "## Reusable Workflow Outputs" >> $GITHUB_STEP_SUMMARY
+          echo "- **test-result:** ${{ needs.call-reusable-workflow.outputs.test-result }}" >> $GITHUB_STEP_SUMMARY

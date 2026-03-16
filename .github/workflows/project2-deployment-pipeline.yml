@@ -1,0 +1,237 @@
+# ============================================================
+# GH-200 Study — Project 2: Deployment Pipeline
+# ============================================================
+# Concepts demonstrated (Days 3, 6):
+#   - Deployment environments with protection rules (required reviewers)
+#   - Environment-specific secrets
+#   - Concurrency per environment
+#   - GITHUB_TOKEN permissions
+#   - OIDC pattern (id-token: write)
+#   - Job ordering: build → staging → production
+#   - workflow_dispatch with inputs
+#   - Status summary & deployment URL
+#   - Conditional job execution (only deploy main)
+# ============================================================
+
+name: "Project 2 – Deployment Pipeline"
+
+# ── Triggers ────────────────────────────────────────────────
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "staging"
+        type: choice
+        options: ["staging", "production"]
+      skip-staging:
+        description: "Skip staging and deploy directly to production?"
+        required: false
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+
+# ── Workflow-level permissions (principle of least privilege) ─
+permissions:
+  contents: read
+
+# ============================================================
+# JOB 1: Build & Package
+# ============================================================
+jobs:
+  build:
+    name: "Build Application"
+    runs-on: ubuntu-latest
+
+    # Expose outputs so downstream jobs can consume them
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      artifact-name: ${{ steps.version.outputs.artifact-name }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Set up Node.js with built-in npm cache
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      # Derive version from git SHA (short)
+      - name: Determine version
+        id: version
+        run: |
+          SHORT_SHA="${{ github.sha }}"
+          VERSION="1.0.0-${SHORT_SHA:0:7}"
+          ARTIFACT="app-${VERSION}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "artifact-name=${ARTIFACT}" >> $GITHUB_OUTPUT
+          echo "## Build Info" >> $GITHUB_STEP_SUMMARY
+          echo "| Key | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | ${VERSION} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | ${{ github.ref_name }} |" >> $GITHUB_STEP_SUMMARY
+
+      # Simulate a build output
+      - name: Build application
+        run: |
+          mkdir -p dist
+          echo "{ \"version\": \"${{ steps.version.outputs.version }}\", \"build\": \"${{ github.sha }}\" }" > dist/build-info.json
+          cp index.js dist/
+          echo "Build complete"
+
+      # Upload the build artifact for deployment jobs to use
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.artifact-name }}
+          path: dist/
+          retention-days: 3
+          if-no-files-found: error
+
+  # ============================================================
+  # JOB 2: Deploy to Staging
+  # ============================================================
+  deploy-staging:
+    name: "Deploy to Staging"
+    runs-on: ubuntu-latest
+    needs: build
+
+    # Skip if manually chosen to deploy direct to production
+    if: |
+      github.event.inputs.skip-staging != 'true' &&
+      (github.event.inputs.environment == 'staging' || github.event.inputs.environment == '' || github.event_name == 'push')
+
+    # Deployment environment: add protection rules in GitHub Settings
+    # Settings → Environments → staging → Add required reviewers (optional for staging)
+    environment:
+      name: staging
+      url: https://staging.example.com   # shown as a link in the GitHub UI
+
+    # Scoped permissions for this deployment job
+    permissions:
+      contents: read
+      # id-token: write   # uncomment to enable OIDC cloud auth
+
+    # Prevent concurrent deploys to staging
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false   # queue rather than cancel (safer for deployments)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: dist/
+
+      # ── OIDC pattern (uncomment when cloud provider is configured) ──
+      # - name: Configure AWS credentials via OIDC
+      #   uses: aws-actions/configure-aws-credentials@v4
+      #   with:
+      #     role-to-assume: arn:aws:iam::123456789012:role/github-staging
+      #     aws-region: us-east-1
+
+      - name: Deploy to Staging
+        run: |
+          echo "🚀 Deploying version ${{ needs.build.outputs.version }} to STAGING..."
+          echo "Artifact: dist/"
+          ls dist/
+          cat dist/build-info.json
+          # In a real pipeline, deploy commands go here:
+          # aws s3 sync dist/ s3://my-staging-bucket/
+          # kubectl apply -f k8s/staging/
+          echo "✅ Staging deployment complete"
+        # In a real pipeline, pass secrets via env:
+        # env:
+        #   DEPLOY_KEY: ${{ secrets.STAGING_DEPLOY_KEY }}
+
+      - name: Write deployment summary
+        run: |
+          echo "## Staging Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ needs.build.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL:** https://staging.example.com" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ✅ Success" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # JOB 3: Deploy to Production (requires manual approval)
+  # ============================================================
+  deploy-production:
+    name: "Deploy to Production"
+    runs-on: ubuntu-latest
+    needs: [build, deploy-staging]
+
+    # Only deploy to production from the main branch
+    # 'always()' is NOT used — if staging fails, production is skipped
+    if: |
+      (needs.deploy-staging.result == 'success' || needs.deploy-staging.result == 'skipped') &&
+      (github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production')
+
+    # Production environment: configure "Required reviewers" in
+    # Settings → Environments → production → Required reviewers
+    # This causes the job to PAUSE until an approver clicks "Approve"
+    environment:
+      name: production
+      url: https://www.example.com
+
+    permissions:
+      contents: read
+      # id-token: write   # uncomment for OIDC
+
+    # Never cancel in-progress production deployments
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: dist/
+
+      - name: Deploy to Production
+        run: |
+          echo "🚀 Deploying version ${{ needs.build.outputs.version }} to PRODUCTION..."
+          echo "Artifact: dist/"
+          ls dist/
+          cat dist/build-info.json
+          # In a real pipeline:
+          # aws s3 sync dist/ s3://my-production-bucket/ --delete
+          # kubectl apply -f k8s/production/
+          echo "✅ Production deployment complete"
+        # env:
+        #   DEPLOY_KEY: ${{ secrets.PROD_DEPLOY_KEY }}
+
+      - name: Write deployment summary
+        run: |
+          echo "## Production Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ needs.build.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL:** https://www.example.com" >> $GITHUB_STEP_SUMMARY
+          echo "- **Approved by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ✅ Success" >> $GITHUB_STEP_SUMMARY
+
+      # Notify on failure (demonstrates failure() status function)
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Production deployment FAILED for version ${{ needs.build.outputs.version }}"
+          # In a real pipeline: post to Slack, PagerDuty, etc.

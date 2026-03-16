@@ -1,0 +1,107 @@
+# ============================================================
+# GH-200 Study — Reusable Workflow: Run Tests
+# ============================================================
+# This workflow can be called by any other workflow using:
+#
+#   jobs:
+#     call-tests:
+#       uses: ./.github/workflows/reusable-run-tests.yml
+#       with:
+#         node-version: '22'
+#       secrets: inherit
+#
+# Concepts demonstrated:
+#   - workflow_call trigger
+#   - inputs (string, boolean types)
+#   - secrets block in workflow_call
+#   - outputs from reusable workflow
+#   - Passing job outputs up to workflow outputs
+# ============================================================
+
+name: "Reusable – Run Tests"
+
+on:
+  workflow_call:
+    # ── Inputs callers can provide ───────────────────────────
+    inputs:
+      node-version:
+        description: "Node.js version to use"
+        required: false
+        type: string
+        default: "22"
+      upload-results:
+        description: "Whether to upload test results as an artifact"
+        required: false
+        type: boolean
+        default: false
+
+    # ── Secrets callers can pass ─────────────────────────────
+    # (no secrets needed for this demo — shown as a pattern)
+    secrets:
+      NPM_TOKEN:
+        description: "Optional private npm registry token"
+        required: false
+
+    # ── Outputs this workflow exposes to callers ─────────────
+    outputs:
+      test-result:
+        description: "Result of the test run (passed | failed)"
+        value: ${{ jobs.run-tests.outputs.test-result }}
+
+# ── Permissions ─────────────────────────────────────────────
+permissions:
+  contents: read
+
+# ============================================================
+# JOB: run-tests
+# ============================================================
+jobs:
+  run-tests:
+    name: "Run Tests (Node ${{ inputs.node-version }})"
+    runs-on: ubuntu-latest
+
+    # Expose step outputs as job outputs
+    outputs:
+      test-result: ${{ steps.run-tests.outputs.test-result }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ inputs.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          # registry-url: https://npm.pkg.github.com  # uncomment for private packages
+
+      - name: Install dependencies
+        run: npm ci
+        # env:
+        #   NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}  # uncomment for private packages
+
+      - name: Run tests
+        id: run-tests
+        run: |
+          npm test
+          echo "test-result=passed" >> $GITHUB_OUTPUT
+
+      # Conditional: only upload if caller requested it
+      - name: Upload test results
+        if: ${{ inputs.upload-results }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: reusable-test-results-node${{ inputs.node-version }}
+          path: coverage/
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Write job summary
+        if: always()
+        run: |
+          echo "## Reusable Workflow: Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Key | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Node version | ${{ inputs.node-version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Upload results | ${{ inputs.upload-results }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Test result | ${{ steps.run-tests.outputs.test-result || 'unknown' }} |" >> $GITHUB_STEP_SUMMARY
